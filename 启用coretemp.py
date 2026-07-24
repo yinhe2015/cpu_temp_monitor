@@ -6,8 +6,12 @@ from 路径与日志记录 import 日志
 启用模块命令 = ['modprobe', 模块名]
 
 def 是否加载() -> bool:
-    进程 = subprocess.check_call(查看模块命令, capture_output=True, text=True)
-    return 模块名 in 进程.stdout
+    return 模块名 in subprocess.run(
+        查看模块命令,
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout
 
 def 启用模块() -> None:
     try:
