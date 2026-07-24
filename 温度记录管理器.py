@@ -11,7 +11,7 @@ class 温度记录管理器:
         self.第一次写入 =  not os.path.exists(self.温度记录文件)
 
     def 添加记录(self, 时间, 温度: list[float]):
-        self.缓存.append((时间, 温度))
+        self.缓存.append((时间, *温度))
         时间戳 = 获取时间戳()
         if 时间戳 - self.上次写入时间 >= 温度记录写入间隔:
             self.上次写入时间 = 时间戳
