@@ -30,5 +30,5 @@ class 温度记录管理器:
 
         with open(self.温度记录文件, 'a') as 文件:
             for 记录 in self.缓存:
-                文件.write(f'{记录[0]},{记录[1]}\n')
+                文件.write(f'{记录[0]},{','.join(map(str, 记录[1:]))}\n')
         self.缓存.clear()
