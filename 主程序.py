@@ -32,7 +32,8 @@ def 减少xpp(幅度: int):
     设置xpp(当前xpp)
 
 def 警告与降频处理(温度列表: list[float]):
-    最热核心, 最热温度 = max(温度列表, key=lambda x: x[1])
+    最热温度 = max(温度列表)
+    最热核心 = ','.join([f'{i}' for i, temp in enumerate(温度列表) if temp == 最热温度])
     if 最热温度 > 错误温度:
         日志.错误(f'⚠️⚠️⚠️ 最热核心 {最热核心} 温度{最热温度:.2f}°C > {错误温度=}°C, 危险 ⚠️⚠️⚠️')
         错误高温处理()
