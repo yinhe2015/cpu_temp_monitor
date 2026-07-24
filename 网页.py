@@ -30,9 +30,13 @@ def 启动():
     if not 是否启动网页 or 线程:
         return
 
+    服务器 = 自定义HTTP服务器(
+        处理函数,
+        端口=网页端口,
+    )
+
     线程 = Thread(
-        target=自定义HTTP服务器.启动,
-        args=(网页端口, 处理函数),
+        target=服务器.启动,
         daemon=True,
     )
     线程.start()
