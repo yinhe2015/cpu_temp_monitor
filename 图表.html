@@ -264,6 +264,76 @@
         let chartInstance = null;
         let autoZoomAxis = 'x';
         let initialTouchGap = null;
+        let chartPreferences = null;
+        const preferenceStorageKey = 'cpuTempChartPreferences';
+        const isMobileDevice =
+            window.matchMedia('(hover: none) and (pointer: coarse)').matches;
+
+        function getDefaultPreferences() {
+            return {
+                zoomDirection: isMobileDevice ? 'auto' : 'x',
+                showDate: false,
+                datasetVisibility: {}
+            };
+        }
+
+        function loadPreferences() {
+            const defaults = getDefaultPreferences();
+            try {
+                const saved = JSON.parse(localStorage.getItem(preferenceStorageKey));
+                if (!saved || typeof saved !== 'object' || Array.isArray(saved)) {
+                    return defaults;
+                }
+
+                const allowedDirections = isMobileDevice
+                    ? ['x', 'y', 'auto', 'none']
+                    : ['x', 'y', 'none'];
+                const zoomDirection = allowedDirections.includes(saved.zoomDirection)
+                    ? saved.zoomDirection
+                    : defaults.zoomDirection;
+                const showDate = typeof saved.showDate === 'boolean'
+                    ? saved.showDate
+                    : defaults.showDate;
+                const datasetVisibility = {};
+                if (
+                    saved.datasetVisibility &&
+                    typeof saved.datasetVisibility === 'object' &&
+                    !Array.isArray(saved.datasetVisibility)
+                ) {
+                    Object.entries(saved.datasetVisibility).forEach(([label, visible]) => {
+                        if (typeof visible === 'boolean') {
+                            datasetVisibility[label] = visible;
+                        }
+                    });
+                }
+
+                return {zoomDirection, showDate, datasetVisibility};
+            } catch (error) {
+                console.warn('读取图表偏好失败，已使用默认设置', error);
+                return defaults;
+            }
+        }
+
+        function savePreferences() {
+            try {
+                localStorage.setItem(
+                    preferenceStorageKey,
+                    JSON.stringify(chartPreferences)
+                );
+            } catch (error) {
+                console.warn('保存图表偏好失败', error);
+            }
+        }
+
+        function saveDatasetVisibility() {
+            if (!chartInstance) return;
+            const visibility = {};
+            chartInstance.data.datasets.forEach((dataset, index) => {
+                visibility[dataset.label] = chartInstance.isDatasetVisible(index);
+            });
+            chartPreferences.datasetVisibility = visibility;
+            savePreferences();
+        }
 
         function getSelectedZoomMode() {
             const direction = document.getElementById('zoomDirection').value;
@@ -272,8 +342,6 @@
         }
 
         function setupMobileAutoZoomOption() {
-            const isMobileDevice =
-                window.matchMedia('(hover: none) and (pointer: coarse)').matches;
             if (!isMobileDevice) return;
 
             const select = document.getElementById('zoomDirection');
@@ -281,6 +349,13 @@
             option.value = 'auto';
             option.textContent = '自动（双指方向）';
             select.insertBefore(option, select.querySelector('option[value="none"]'));
+        }
+
+        function applySavedPreferences() {
+            document.getElementById('zoomDirection').value =
+                chartPreferences.zoomDirection;
+            document.getElementById('showDate').checked =
+                chartPreferences.showDate;
         }
 
         function setupTouchDirectionDetection() {
@@ -380,6 +455,7 @@
             chartInstance.setDatasetVisibility(index, visible);
             applyVisibleTemperatureRange();
             updateCoreFilterSummary();
+            saveDatasetVisibility();
         }
 
         function buildCoreFilter(datasets) {
@@ -392,11 +468,16 @@
 
                 const checkbox = document.createElement('input');
                 checkbox.type = 'checkbox';
-                checkbox.checked = true;
+                const savedVisibility =
+                    chartPreferences.datasetVisibility[dataset.label];
+                checkbox.checked = typeof savedVisibility === 'boolean'
+                    ? savedVisibility
+                    : true;
                 checkbox.dataset.datasetIndex = index;
                 checkbox.addEventListener('change', () =>
                     setDatasetVisibility(index, checkbox.checked)
                 );
+                chartInstance.setDatasetVisibility(index, checkbox.checked);
 
                 const color = document.createElement('span');
                 color.textContent = '●';
@@ -408,6 +489,7 @@
                 label.append(checkbox, color, text);
                 list.appendChild(label);
             });
+            applyVisibleTemperatureRange();
             updateCoreFilterSummary();
         }
 
@@ -415,6 +497,8 @@
             const ctx = document.getElementById('tempChart').getContext('2d');
             if(chartInstance) chartInstance.destroy();
             const temperatureRange = getTemperatureRange(datasets);
+            const zoomEnabled =
+                document.getElementById('zoomDirection').value !== 'none';
 
             chartInstance = new Chart(ctx, {
                 type: 'line',
@@ -470,11 +554,11 @@
                         zoom: {
                             zoom: {
                                 wheel: {
-                                    enabled: true,
+                                    enabled: zoomEnabled,
                                     speed: 0.08
                                 },
                                 pinch: {
-                                    enabled: true
+                                    enabled: zoomEnabled
                                 },
                                 mode: getSelectedZoomMode()
                             },
@@ -495,10 +579,15 @@
         }
 
         document.getElementById('showDate').addEventListener('change', () => {
+            chartPreferences.showDate =
+                document.getElementById('showDate').checked;
+            savePreferences();
             chartInstance?.update();
         });
 
         document.getElementById('zoomDirection').addEventListener('change', event => {
+            chartPreferences.zoomDirection = event.target.value;
+            savePreferences();
             if (!chartInstance) return;
             chartInstance.resetZoom('none');
             applyVisibleTemperatureRange('none');
@@ -518,6 +607,7 @@
             });
             applyVisibleTemperatureRange();
             updateCoreFilterSummary();
+            saveDatasetVisibility();
         });
 
         document.getElementById('hideAllCores').addEventListener('click', () => {
@@ -528,6 +618,7 @@
             });
             applyVisibleTemperatureRange();
             updateCoreFilterSummary();
+            saveDatasetVisibility();
         });
 
         document.getElementById('tempChart').addEventListener('dblclick', () => {
@@ -537,6 +628,8 @@
         });
 
         setupMobileAutoZoomOption();
+        chartPreferences = loadPreferences();
+        applySavedPreferences();
         setupTouchDirectionDetection();
 
         // 启动加载
