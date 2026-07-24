@@ -1,5 +1,4 @@
 from 配置 import *
-from 路径与日志记录 import 日志
 from 时间 import 获取时间戳
 import os
 
@@ -24,6 +23,7 @@ class 温度记录管理器:
 
         if self.第一次写入:
             样本长度 = len(self.缓存[0]) - 1
+            from 路径与日志记录 import 日志
             日志.信息(f'第一次写入 {样本长度} 个核心')
             文本 = '时间,' + ','.join([f'核心{i}温度' for i in range(样本长度)]) + '\n'
             with open(self.温度记录文件, 'w') as 文件:
