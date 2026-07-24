@@ -22,13 +22,42 @@
             font-family: system-ui, sans-serif;
         }
         .container {
-            max-width: 100%;
-            overflow-x: auto;
+            min-width: 0;
+            min-height: 0;
+            overflow: hidden;
         }
         #chartWrap {
-            width: 1600px;
-            height: 700px;
+            width: 100%;
+            height: 100%;
             position: relative;
+        }
+        .chart-layout {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 16px;
+            grid-template-rows: 700px 16px;
+            width: 100%;
+            min-width: 0;
+        }
+        .horizontal-scroll {
+            grid-column: 1;
+            grid-row: 2;
+            overflow-x: scroll;
+            overflow-y: hidden;
+        }
+        .vertical-scroll {
+            grid-column: 2;
+            grid-row: 1;
+            overflow-x: hidden;
+            overflow-y: scroll;
+        }
+        .scroll-spacer {
+            width: 1px;
+            height: 1px;
+            pointer-events: none;
+        }
+        .horizontal-scroll,
+        .vertical-scroll {
+            scrollbar-color: #777 #333;
         }
         h1 {
             font-size: 22px;
@@ -74,6 +103,18 @@
             border-radius: 5px;
             background: #242424;
             cursor: pointer;
+        }
+        .control-button {
+            padding: 5px 11px;
+            color: #eee;
+            border: 1px solid #555;
+            border-radius: 5px;
+            background: #242424;
+            cursor: pointer;
+        }
+        .control-button:disabled {
+            opacity: 0.55;
+            cursor: wait;
         }
         details.core-filter {
             position: relative;
@@ -145,7 +186,7 @@
 </head>
 <body>
     <div class="title-bar">
-        <h1>CPU核心温度实时曲线</h1>
+        <h1>CPU核心温度曲线</h1>
         <div class="controls">
             <span class="zoom-tip">滚轮缩放，双击恢复</span>
             <label class="select-control">
@@ -170,11 +211,20 @@
                 <input type="checkbox" id="showDate">
                 <span>显示年月日</span>
             </label>
+            <button type="button" class="control-button" id="refreshData">刷新</button>
         </div>
     </div>
-    <div class="container">
-        <div id="chartWrap">
-            <canvas id="tempChart"></canvas>
+    <div class="chart-layout">
+        <div class="container" id="chartViewport">
+            <div id="chartWrap">
+                <canvas id="tempChart"></canvas>
+            </div>
+        </div>
+        <div class="vertical-scroll" id="verticalScroll" aria-label="温度范围滚动条">
+            <div class="scroll-spacer" id="verticalScrollSpacer"></div>
+        </div>
+        <div class="horizontal-scroll" id="horizontalScroll" aria-label="时间范围滚动条">
+            <div class="scroll-spacer" id="horizontalScrollSpacer"></div>
         </div>
     </div>
 
@@ -187,13 +237,20 @@
         ];
 
         async function loadData() {
+            const refreshButton = document.getElementById('refreshData');
+            refreshButton.disabled = true;
+            refreshButton.textContent = '刷新中…';
             try {
-                const res = await fetch('/data');
+                const res = await fetch('/data', {cache: 'no-store'});
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
                 const text = await res.text();
                 parseCSV(text);
             } catch (err) {
                 console.error("加载/data失败", err);
                 alert("无法获取 /data 数据，请检查接口");
+            } finally {
+                refreshButton.disabled = false;
+                refreshButton.textContent = '刷新';
             }
         }
 
@@ -265,6 +322,7 @@
         let autoZoomAxis = 'x';
         let initialTouchGap = null;
         let chartPreferences = null;
+        let syncingScrollbars = false;
         const preferenceStorageKey = 'cpuTempChartPreferences';
         const isMobileDevice =
             window.matchMedia('(hover: none) and (pointer: coarse)').matches;
@@ -333,6 +391,127 @@
             });
             chartPreferences.datasetVisibility = visibility;
             savePreferences();
+        }
+
+        function clamp(value, min, max) {
+            return Math.min(Math.max(value, min), max);
+        }
+
+        function syncScrollbarsFromChart() {
+            if (!chartInstance?.scales.x || !chartInstance?.scales.y) return;
+
+            const horizontal = document.getElementById('horizontalScroll');
+            const horizontalSpacer =
+                document.getElementById('horizontalScrollSpacer');
+            const vertical = document.getElementById('verticalScroll');
+            const verticalSpacer = document.getElementById('verticalScrollSpacer');
+            const limits = chartInstance.options.plugins.zoom.limits;
+            const xScale = chartInstance.scales.x;
+            const yScale = chartInstance.scales.y;
+
+            syncingScrollbars = true;
+
+            const totalXSpan = Math.max(limits.x.max - limits.x.min, 0);
+            const visibleXSpan = clamp(
+                xScale.max - xScale.min,
+                Math.min(1, totalXSpan),
+                totalXSpan || 1
+            );
+            const horizontalViewportWidth = horizontal.clientWidth;
+            const horizontalContentWidth = totalXSpan > visibleXSpan
+                ? horizontalViewportWidth * totalXSpan / visibleXSpan
+                : horizontalViewportWidth;
+            horizontalSpacer.style.width =
+                `${Math.max(horizontalContentWidth, horizontalViewportWidth)}px`;
+            horizontalSpacer.style.height = '1px';
+
+            const maxHorizontalScroll =
+                Math.max(horizontal.scrollWidth - horizontal.clientWidth, 0);
+            const horizontalTravel = Math.max(totalXSpan - visibleXSpan, 0);
+            const horizontalRatio = horizontalTravel > 0
+                ? clamp((xScale.min - limits.x.min) / horizontalTravel, 0, 1)
+                : 0;
+            horizontal.scrollLeft = maxHorizontalScroll * horizontalRatio;
+
+            const totalYSpan = Math.max(limits.y.max - limits.y.min, 0);
+            const visibleYSpan = clamp(
+                yScale.max - yScale.min,
+                Math.min(1, totalYSpan),
+                totalYSpan || 1
+            );
+            const verticalViewportHeight = vertical.clientHeight;
+            const verticalContentHeight = totalYSpan > visibleYSpan
+                ? verticalViewportHeight * totalYSpan / visibleYSpan
+                : verticalViewportHeight;
+            verticalSpacer.style.height =
+                `${Math.max(verticalContentHeight, verticalViewportHeight)}px`;
+            verticalSpacer.style.width = '1px';
+
+            const maxVerticalScroll =
+                Math.max(vertical.scrollHeight - vertical.clientHeight, 0);
+            const verticalTravel = Math.max(totalYSpan - visibleYSpan, 0);
+            const verticalRatio = verticalTravel > 0
+                ? clamp((limits.y.max - yScale.max) / verticalTravel, 0, 1)
+                : 0;
+            vertical.scrollTop = maxVerticalScroll * verticalRatio;
+
+            requestAnimationFrame(() => {
+                syncingScrollbars = false;
+            });
+        }
+
+        function updateChartFromHorizontalScroll() {
+            if (syncingScrollbars || !chartInstance?.scales.x) return;
+            const scrollbar = document.getElementById('horizontalScroll');
+            const limits = chartInstance.options.plugins.zoom.limits.x;
+            const visibleSpan =
+                chartInstance.scales.x.max - chartInstance.scales.x.min;
+            const availableDataTravel =
+                Math.max((limits.max - limits.min) - visibleSpan, 0);
+            const availableScroll =
+                Math.max(scrollbar.scrollWidth - scrollbar.clientWidth, 0);
+            if (availableDataTravel <= 0 || availableScroll <= 0) return;
+
+            const ratio = clamp(scrollbar.scrollLeft / availableScroll, 0, 1);
+            const min = limits.min + availableDataTravel * ratio;
+            chartInstance.options.scales.x.min = min;
+            chartInstance.options.scales.x.max = min + visibleSpan;
+            chartInstance.update('none');
+        }
+
+        function updateChartFromVerticalScroll() {
+            if (syncingScrollbars || !chartInstance?.scales.y) return;
+            const scrollbar = document.getElementById('verticalScroll');
+            const limits = chartInstance.options.plugins.zoom.limits.y;
+            const visibleSpan =
+                chartInstance.scales.y.max - chartInstance.scales.y.min;
+            const availableDataTravel =
+                Math.max((limits.max - limits.min) - visibleSpan, 0);
+            const availableScroll =
+                Math.max(scrollbar.scrollHeight - scrollbar.clientHeight, 0);
+            if (availableDataTravel <= 0 || availableScroll <= 0) return;
+
+            const ratio = clamp(scrollbar.scrollTop / availableScroll, 0, 1);
+            const max = limits.max - availableDataTravel * ratio;
+            chartInstance.options.scales.y.max = max;
+            chartInstance.options.scales.y.min = max - visibleSpan;
+            chartInstance.update('none');
+        }
+
+        function setupChartScrollbars() {
+            document.getElementById('horizontalScroll').addEventListener(
+                'scroll',
+                updateChartFromHorizontalScroll,
+                {passive: true}
+            );
+            document.getElementById('verticalScroll').addEventListener(
+                'scroll',
+                updateChartFromVerticalScroll,
+                {passive: true}
+            );
+            window.addEventListener('resize', () => {
+                requestAnimationFrame(syncScrollbarsFromChart);
+            });
         }
 
         function getSelectedZoomMode() {
@@ -446,7 +625,10 @@
             const range = getTemperatureRange(chartInstance.data.datasets, true);
             chartInstance.options.scales.y.min = range.min;
             chartInstance.options.scales.y.max = range.max;
+            chartInstance.options.plugins.zoom.limits.y.min = range.min;
+            chartInstance.options.plugins.zoom.limits.y.max = range.max;
             chartInstance.update(updateMode);
+            requestAnimationFrame(syncScrollbarsFromChart);
         }
 
         function setDatasetVisibility(index, visible) {
@@ -499,6 +681,19 @@
             const temperatureRange = getTemperatureRange(datasets);
             const zoomEnabled =
                 document.getElementById('zoomDirection').value !== 'none';
+            const pointCount = labels.length;
+            const viewportWidth =
+                document.getElementById('chartViewport').clientWidth ||
+                window.innerWidth;
+            const visiblePointCount = Math.max(
+                12,
+                Math.floor(viewportWidth / 22)
+            );
+            const initialXMax = Math.max(pointCount - 1, 0);
+            const initialXMin = Math.max(
+                0,
+                pointCount - visiblePointCount
+            );
 
             chartInstance = new Chart(ctx, {
                 type: 'line',
@@ -519,6 +714,8 @@
                         },
                         x: {
                             title: {display:true, text:"时间", color:"#eee"},
+                            min: initialXMin,
+                            max: initialXMax,
                             ticks: {
                                 color:"#ddd",
                                 maxRotation: 45,
@@ -552,6 +749,8 @@
                             }
                         },
                         zoom: {
+                            onZoom: syncScrollbarsFromChart,
+                            onZoomComplete: syncScrollbarsFromChart,
                             zoom: {
                                 wheel: {
                                     enabled: zoomEnabled,
@@ -563,8 +762,16 @@
                                 mode: getSelectedZoomMode()
                             },
                             limits: {
-                                x: {minRange: 5},
-                                y: {minRange: 1}
+                                x: {
+                                    min: 0,
+                                    max: initialXMax,
+                                    minRange: Math.min(5, Math.max(initialXMax, 1))
+                                },
+                                y: {
+                                    min: temperatureRange.min,
+                                    max: temperatureRange.max,
+                                    minRange: 1
+                                }
                             }
                         }
                     },
@@ -576,6 +783,7 @@
                 }
             });
             buildCoreFilter(datasets);
+            requestAnimationFrame(syncScrollbarsFromChart);
         }
 
         document.getElementById('showDate').addEventListener('change', () => {
@@ -627,10 +835,13 @@
             applyVisibleTemperatureRange();
         });
 
+        document.getElementById('refreshData').addEventListener('click', loadData);
+
         setupMobileAutoZoomOption();
         chartPreferences = loadPreferences();
         applySavedPreferences();
         setupTouchDirectionDetection();
+        setupChartScrollbars();
 
         // 启动加载
         window.onload = loadData;
