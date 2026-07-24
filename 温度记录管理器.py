@@ -22,10 +22,12 @@ class 温度记录管理器:
             return
 
         if self.第一次写入:
-            样本长度 = len(self.缓存[2])
+            样本长度 = len(self.缓存[0][2])
             from 路径与日志记录 import 日志
             日志.信息(f'第一次写入, {样本长度} 个核心')
-            文本 = '时间,总温度,' + ','.join([f'核心{i}温度' for i in range(样本长度 + 1, 1)]) + '\n'
+            文本 = '时间,总温度,' + ','.join(
+                [f'核心{i}' for i in range(1, 样本长度 + 1)]
+            ) + '\n'
             with open(self.温度记录文件, 'w') as 文件:
                 文件.write(文本)
             self.第一次写入 = False

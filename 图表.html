@@ -200,45 +200,54 @@
             const lines = text.trim().split('\n');
             if(lines.length < 2) return alert("数据为空");
 
-            const header = lines[0].split(',');
+            const header = lines[0].split(',').map(name =>
+                name.replace(/^\uFEFF/, '').trim()
+            );
             const rows = lines.slice(1);
 
-            // 自动提取所有核心列
-            const coreCols = [];
+            // 兼容新格式：
+            // 时间,总温度（主温度）,核心1,核心2...
+            // 同时兼容旧格式中的“核心1温度”等列名
+            const temperatureCols = [];
             header.forEach((name, idx) => {
-                if(name.startsWith('核心') && name.includes('温度')){
-                    coreCols.push({
+                if (idx === 0) return;
+                const isMainTemperature =
+                    name.includes('总温度') || name.includes('主温度');
+                const isCoreTemperature = /^核心\s*\d+(?:温度)?$/.test(name);
+                if (isMainTemperature || isCoreTemperature) {
+                    temperatureCols.push({
                         index: idx,
-                        label: name.replace('温度','').trim()
+                        label: isMainTemperature
+                            ? '总温度（主温度）'
+                            : name.replace(/温度$/, '').replace(/\s+/g, '')
                     });
                 }
             });
-            const coreCount = coreCols.length;
-            console.log("自动识别核心数量：", coreCount, coreCols);
+            console.log("自动识别温度列：", temperatureCols);
 
             // 组装图表数据
             const datasets = [];
             const timeLabels = [];
-            const coreDataMap = {};
-            coreCols.forEach(item=> coreDataMap[item.label] = []);
+            const temperatureDataMap = {};
+            temperatureCols.forEach(item => temperatureDataMap[item.label] = []);
 
             for(const line of rows){
                 const cols = line.split(',');
                 const timeStr = cols[0];
                 timeLabels.push(timeStr);
 
-                for(const item of coreCols){
+                for(const item of temperatureCols){
                     const val = parseFloat(cols[item.index]);
-                    coreDataMap[item.label].push(isNaN(val)?null:val);
+                    temperatureDataMap[item.label].push(isNaN(val) ? null : val);
                 }
             }
 
             // 构建Chart数据集
-            coreCols.forEach((item, idx)=>{
+            temperatureCols.forEach((item, idx)=>{
                 const color = colorList[idx % colorList.length];
                 datasets.push({
                     label: item.label,
-                    data: coreDataMap[item.label],
+                    data: temperatureDataMap[item.label],
                     borderColor: color,
                     backgroundColor: color + '33',
                     borderWidth: 2,
