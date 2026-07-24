@@ -1,3 +1,7 @@
+import sys
+import os
+sys.path.append(os.path.join(os.path.expanduser('~'), 'disk-d', 'pylib'))
+
 from 配置 import *
 from 时间 import 格式化当前时间, 默认格式_日志
 from 获取cpu温度 import 获取各核心温度
