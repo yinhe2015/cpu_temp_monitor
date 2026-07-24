@@ -152,6 +152,7 @@
                 <select id="zoomDirection">
                     <option value="x" selected>横向（时间）</option>
                     <option value="y">竖向（温度）</option>
+                    <option value="none">无（关闭）</option>
                 </select>
             </label>
             <details class="core-filter">
@@ -428,7 +429,10 @@
             if (!chartInstance) return;
             chartInstance.resetZoom('none');
             applyVisibleTemperatureRange('none');
-            chartInstance.options.plugins.zoom.zoom.mode = event.target.value;
+            const direction = event.target.value;
+            chartInstance.options.plugins.zoom.zoom.wheel.enabled = direction !== 'none';
+            chartInstance.options.plugins.zoom.zoom.mode =
+                direction === 'none' ? 'x' : direction;
             chartInstance.update();
         });
 
