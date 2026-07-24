@@ -1,2 +1,4 @@
 lsmod | grep coretemp
 modprobe coretemp
+
+a
