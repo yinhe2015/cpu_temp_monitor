@@ -11,4 +11,3 @@ os.makedirs(数据目录, exist_ok=True)
 温度记录文件 = os.path.join(数据目录, '温度记录.csv')
 
 日志 = 打开日志(日志路径, 输出=True)
-温度记录 = 温度记录管理器(温度记录文件)
