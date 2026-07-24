@@ -30,9 +30,10 @@ def 获取温度文件() -> list[str]:
     温度文件数据.sort(key=lambda 数据: 数据[0])
     温度文件 = [路径 for 编号, 路径 in 温度文件数据]
 
-def 获取各核心温度() -> list[float]:
+def 获取各核心温度() -> tuple[float, list[float]]:
     global 温度文件
     if 温度文件 is None:
         获取温度文件()
 
-    return [int(_读取文件(路径)) / 1000.0 for 路径 in 温度文件]
+    各核心温度 = [int(_读取文件(路径)) / 1000.0 for 路径 in 温度文件]
+    return 各核心温度[0], 各核心温度[1:]
