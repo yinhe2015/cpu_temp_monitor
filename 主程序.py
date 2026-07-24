@@ -4,6 +4,7 @@ sys.path.append(os.path.join(os.path.expanduser('~'), 'disk-d', 'pylib'))
 
 from 配置 import *
 from 时间 import 格式化当前时间, 默认格式_日志
+from 启用coretemp import 检查并启用模块 as 启用coretemp
 from 获取cpu温度 import 获取各核心温度
 from cpu频率控制 import *
 from 温度记录管理器 import 温度记录管理器
@@ -66,6 +67,8 @@ def 监控温度(温度记录: 温度记录管理器):
         time.sleep(温度检测间隔)
 
 def 主函数():
+    启用coretemp()
+
     温度记录 = 温度记录管理器(温度记录文件)
     监控温度(温度记录)
 
