@@ -22,7 +22,7 @@ class 温度记录管理器:
             return
 
         if self.第一次写入:
-            样本长度 = len(self.缓存[0][1])
+            样本长度 = len(self.缓存[0]) - 1
             文本 = '时间,' + ','.join([f'核心{i}温度' for i in range(样本长度)]) + '\n'
             with open(self.温度记录文件, 'w') as 文件:
                 文件.write(文本)
