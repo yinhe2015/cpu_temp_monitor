@@ -1,7 +1,8 @@
 from 配置 import *
-from 路径与日志记录 import 温度记录文件
+from 路径与日志记录 import 主目录, 温度记录文件
 from 自定义http服务器 import 自定义HTTP服务器, 页面_404, 页面_405
 from threading import Thread
+import os
 
 线程 = None
 
@@ -11,7 +12,7 @@ def 处理函数(
 ):
     if 请求.类型 == 'GET':
         if 请求.相对URL == '/' or 请求.相对URL == '/index.html':
-            操作器.发送文件('图表.html')
+            操作器.发送文件(os.path.join(主目录, '图表.html'))
         elif 请求.相对URL == '/data':
             操作器.发送文件(温度记录文件, MIME类型='text/csv')
         else:
