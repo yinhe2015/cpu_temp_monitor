@@ -13,3 +13,5 @@ pip3 install -r requirements.txt
 ```bash
 python3 主程序.py
 ```
+
+打开浏览器, 输入 `http://ip:端口` 即可查看温度图表
