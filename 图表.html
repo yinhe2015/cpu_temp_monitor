@@ -444,6 +444,10 @@
             const xMax = chartInstance.scales.x.max;
             const yMin = chartInstance.scales.y.min;
             const yMax = chartInstance.scales.y.max;
+            const previousLastIndex = Math.max(totalRecords - 1, 0);
+            const wasFollowingLatest =
+                totalRecords === 0 || xMax >= previousLastIndex - 0.5;
+            const visibleXSpan = xMax - xMin;
             totalRecords = Math.max(totalRecords, Number(message.total) || index + 1);
             chartInstance.options.plugins.zoom.limits.x.max =
                 Math.max(totalRecords - 1, 0);
@@ -471,9 +475,19 @@
                 loadedEnd = Math.max(loadedEnd, index + 1);
             }
 
-            // 新记录不得改变用户当前的缩放和位置。
-            chartInstance.options.scales.x.min = xMin;
-            chartInstance.options.scales.x.max = xMax;
+            // 位于最右端时继续跟随最新记录，并保持缩放宽度；
+            // 查看历史数据时则完全保留当前位置。
+            if (wasFollowingLatest) {
+                const latestIndex = Math.max(totalRecords - 1, 0);
+                chartInstance.options.scales.x.max = latestIndex;
+                chartInstance.options.scales.x.min = Math.max(
+                    0,
+                    latestIndex - visibleXSpan
+                );
+            } else {
+                chartInstance.options.scales.x.min = xMin;
+                chartInstance.options.scales.x.max = xMax;
+            }
             chartInstance.options.scales.y.min = yMin;
             chartInstance.options.scales.y.max = yMax;
             chartInstance.update('none');
