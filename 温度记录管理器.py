@@ -16,7 +16,15 @@ class 温度记录管理器:
             self.写入回调列表.append(回调函数)
 
     def 添加记录(self, 时间, 主温度, 温度: list[float]):
-        self.缓存.append((时间, 主温度, 温度))
+        记录 = (时间, 主温度, 温度)
+        self.缓存.append(记录)
+        # 实时订阅者每次采样后立即收到记录；CSV 仍按原间隔批量落盘。
+        for 回调函数 in self.写入回调列表:
+            try:
+                回调函数(记录)
+            except Exception as 错误:
+                print(f'温度记录写入回调失败: {错误}')
+
         时间戳 = 获取时间戳()
         if 时间戳 - self.上次写入时间 >= 温度记录写入间隔:
             self.上次写入时间 = 时间戳
@@ -41,12 +49,4 @@ class 温度记录管理器:
         with open(self.温度记录文件, 'a') as 文件:
             for 记录 in 已写入记录:
                 文件.write(f'{记录[0]},{记录[1]},{','.join(map(str, 记录[2]))}\n')
-                文件.flush()
-                # 每条记录完整落盘后立即通知订阅者。
-                for 回调函数 in self.写入回调列表:
-                    try:
-                        回调函数(记录)
-                    except Exception as 错误:
-                        # 网页推送失败不能影响温度记录继续落盘。
-                        print(f'温度记录写入回调失败: {错误}')
         self.缓存.clear()

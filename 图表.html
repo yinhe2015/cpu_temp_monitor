@@ -283,6 +283,7 @@
         let rangeLoadTimer = null;
         let webSocket = null;
         let webSocketReconnectTimer = null;
+        let pendingRealtimeMessages = [];
         const timeByIndex = new Map();
 
         function parseTemperatureColumns(header) {
@@ -436,7 +437,11 @@
         }
 
         function appendRealtimeRecord(message) {
-            if (!chartInstance || !Array.isArray(message.values)) return;
+            if (!Array.isArray(message.values)) return;
+            if (!chartInstance) {
+                pendingRealtimeMessages.push(message);
+                return;
+            }
             const index = Number(message.index);
             if (!Number.isInteger(index) || index < 0) return;
 
@@ -1036,6 +1041,11 @@
             });
             buildCoreFilter(datasets);
             requestAnimationFrame(syncScrollbarsFromChart);
+            if (pendingRealtimeMessages.length) {
+                const messages = pendingRealtimeMessages;
+                pendingRealtimeMessages = [];
+                messages.forEach(appendRealtimeRecord);
+            }
         }
 
         document.getElementById('showDate').addEventListener('change', () => {

@@ -2,6 +2,7 @@ from 配置 import *
 from 路径与日志记录 import 主目录, 温度记录文件
 from 自定义http服务器 import 自定义HTTP服务器, 页面_404, 页面_405
 from threading import Lock, Thread
+from collections import deque
 import base64
 import csv
 import hashlib
@@ -112,6 +113,9 @@ class WebSocket客户端:
 数据读取器 = CSV范围读取器(温度记录文件)
 WebSocket客户端集合 = set()
 WebSocket客户端锁 = Lock()
+实时记录锁 = Lock()
+实时记录缓存 = deque(maxlen=5000)
+实时下一索引 = None
 
 
 def _读取确切字节(操作器, 数量):
@@ -164,10 +168,16 @@ def _升级WebSocket(请求, 操作器):
     操作器.结束头()
 
     客户端 = WebSocket客户端(操作器)
-    with WebSocket客户端锁:
-        WebSocket客户端集合.add(客户端)
     try:
-        客户端.发送({'type': 'ready', **数据读取器.元数据()})
+        元数据 = 数据读取器.元数据()
+        # 与新记录编号分配使用同一把锁，避免“准备消息”和实时消息交叉或漏发。
+        with 实时记录锁:
+            客户端.发送({'type': 'ready', **元数据})
+            for 消息 in 实时记录缓存:
+                if 消息['index'] >= 元数据['total']:
+                    客户端.发送(消息)
+            with WebSocket客户端锁:
+                WebSocket客户端集合.add(客户端)
         _保持WebSocket连接(客户端)
     except (ConnectionError, BrokenPipeError, ConnectionResetError, OSError):
         pass
@@ -177,23 +187,61 @@ def _升级WebSocket(请求, 操作器):
 
 
 def 新记录回调(记录):
-    """注册给温度记录管理器；记录落盘后向所有网页客户端广播。"""
+    """注册给温度记录管理器；每次采样后立即向网页广播。"""
+    global 实时下一索引
     时间, 主温度, 温度列表 = 记录
-    总数 = 数据读取器.元数据()['total']
-    消息 = {
-        'type': 'record',
-        'index': 总数 - 1,
-        'values': [时间, 主温度, *温度列表],
-        'total': 总数,
-    }
-    with WebSocket客户端锁:
-        客户端列表 = list(WebSocket客户端集合)
+    磁盘总数 = 数据读取器.元数据()['total']
+    with 实时记录锁:
+        while 实时记录缓存 and 实时记录缓存[0]['index'] < 磁盘总数:
+            实时记录缓存.popleft()
+        if 实时下一索引 is None or 实时下一索引 < 磁盘总数:
+            实时下一索引 = 磁盘总数
+        索引 = 实时下一索引
+        实时下一索引 += 1
+        消息 = {
+            'type': 'record',
+            'index': 索引,
+            'values': [时间, 主温度, *温度列表],
+            'total': 实时下一索引,
+        }
+        实时记录缓存.append(消息)
+        with WebSocket客户端锁:
+            客户端列表 = list(WebSocket客户端集合)
     for 客户端 in 客户端列表:
         try:
             客户端.发送(消息)
         except (BrokenPipeError, ConnectionResetError, OSError):
             with WebSocket客户端锁:
                 WebSocket客户端集合.discard(客户端)
+
+
+def 完整元数据():
+    元数据 = 数据读取器.元数据()
+    with 实时记录锁:
+        实时总数 = 实时下一索引
+    if 实时总数 is not None:
+        元数据['total'] = max(元数据['total'], 实时总数)
+    return 元数据
+
+
+def 读取完整范围(开始, 数量):
+    结束 = 开始 + 数量
+    结果 = 数据读取器.读取范围(开始, 数量)
+    with 实时记录锁:
+        实时行 = [
+            {'index': 消息['index'], 'values': 消息['values']}
+            for 消息 in 实时记录缓存
+            if 开始 <= 消息['index'] < 结束
+        ]
+        实时总数 = 实时下一索引
+
+    行映射 = {行['index']: 行 for 行 in 结果['rows']}
+    行映射.update({行['index']: 行 for 行 in 实时行})
+    结果['start'] = 开始
+    结果['rows'] = [行映射[索引] for 索引 in sorted(行映射)]
+    if 实时总数 is not None:
+        结果['total'] = max(结果['total'], 实时总数)
+    return 结果
 
 
 def _获取整数参数(请求, 名称, 默认值):
@@ -209,13 +257,16 @@ def 处理函数(
 ):
     if 请求.类型 == 'GET':
         if 请求.相对URL == '/' or 请求.相对URL == '/index.html':
-            操作器.发送文件(os.path.join(主目录, '图表.html'))
+            操作器.发送文件(
+                os.path.join(主目录, '图表.html'),
+                额外头={'Cache-Control': 'no-store, max-age=0'},
+            )
         elif 请求.相对URL == '/data/meta':
-            操作器.发送JSON(数据读取器.元数据())
+            操作器.发送JSON(完整元数据())
         elif 请求.相对URL == '/data/range':
             开始 = max(0, _获取整数参数(请求, 'start', 0))
             数量 = max(1, min(_获取整数参数(请求, 'limit', 500), 5000))
-            操作器.发送JSON(数据读取器.读取范围(开始, 数量))
+            操作器.发送JSON(读取完整范围(开始, 数量))
         elif 请求.相对URL == '/data':
             # 保留旧接口兼容其他工具；新网页只使用范围接口。
             if not os.path.exists(温度记录文件):
