@@ -14,6 +14,10 @@ def 处理函数(
         if 请求.相对URL == '/' or 请求.相对URL == '/index.html':
             操作器.发送文件(os.path.join(主目录, '图表.html'))
         elif 请求.相对URL == '/data':
+            if not os.path.exists(温度记录文件):
+                操作器.发送响应(200)
+                操作器.结束头()
+                操作器.写入(b'')
             操作器.发送文件(温度记录文件, MIME类型='text/csv')
         else:
             操作器.发送响应(404)
