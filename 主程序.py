@@ -5,7 +5,7 @@ sys.path.append(os.path.join(os.path.expanduser('~'), 'pylib'))
 from 配置 import *
 from 时间 import 格式化当前时间, 默认格式_日志
 from 启用coretemp import 检查并加载模块 as 启用coretemp
-from 网页 import 启动 as 启动网页
+from 网页 import 启动 as 启动网页, 新记录回调
 from 获取cpu温度 import 获取各核心温度
 from cpu频率控制 import *
 from 温度记录管理器 import 温度记录管理器
@@ -70,8 +70,6 @@ def 警告与降频处理(主温度: float, 温度列表: list[float]):
             处理温度(f'核心 {核心}', 温度, 需要降频=False)
 
 def 监控温度(温度记录: 温度记录管理器):
-    上一个温度列表 = 获取各核心温度()
-
     while True:
         # 获取温度
         主温度, 温度列表 = 获取各核心温度()
@@ -91,6 +89,7 @@ def 主函数():
     启动网页() # 如果未设置启动, 则会跳过
 
     温度记录 = 温度记录管理器(温度记录文件)
+    温度记录.注册写入回调(新记录回调)
     监控温度(温度记录)
 
 if __name__ == '__main__':

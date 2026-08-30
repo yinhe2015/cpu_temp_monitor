@@ -59,6 +59,45 @@
         .vertical-scroll {
             scrollbar-color: #777 #333;
         }
+        .chart-tooltip {
+            position: absolute;
+            z-index: 20;
+            min-width: 150px;
+            padding: 9px 11px;
+            color: #ddd;
+            border: 1px solid #555;
+            border-radius: 6px;
+            background: #202020ee;
+            box-shadow: 0 5px 18px #0009;
+            pointer-events: none;
+            transform: translate(-50%, calc(-100% - 10px));
+            transition: opacity 80ms ease;
+        }
+        .chart-tooltip-title {
+            margin-bottom: 6px;
+            color: #fff;
+        }
+        .chart-tooltip-row {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            line-height: 1.55;
+        }
+        .chart-tooltip-row.is-active {
+            color: #fff;
+            font-weight: 700;
+        }
+        .chart-tooltip-icon {
+            width: 9px;
+            height: 9px;
+            flex: 0 0 9px;
+            border-radius: 50%;
+            box-shadow: 0 0 0 1px #ffffff55;
+        }
+        .chart-tooltip-row.is-active .chart-tooltip-icon {
+            transform: scale(1.45);
+            box-shadow: 0 0 7px 2px currentColor;
+        }
         h1 {
             font-size: 22px;
         }
@@ -236,86 +275,239 @@
             '#00cccc','#ff6699','#9966ff','#66ffcc','#ffcc66'
         ];
 
-        async function loadData() {
-            const refreshButton = document.getElementById('refreshData');
-            refreshButton.disabled = true;
-            refreshButton.textContent = '刷新中…';
-            try {
-                const res = await fetch('/data', {cache: 'no-store'});
-                if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                const text = await res.text();
-                parseCSV(text);
-            } catch (err) {
-                console.error("加载/data失败", err);
-                alert("无法获取 /data 数据，请检查接口");
-            } finally {
-                refreshButton.disabled = false;
-                refreshButton.textContent = '刷新';
-            }
-        }
+        let totalRecords = 0;
+        let temperatureCols = [];
+        let loadedStart = 0;
+        let loadedEnd = 0;
+        let rangeRequestId = 0;
+        let rangeLoadTimer = null;
+        let webSocket = null;
+        let webSocketReconnectTimer = null;
+        const timeByIndex = new Map();
 
-        function parseCSV(text) {
-            const lines = text.trim().split('\n');
-            if(lines.length < 2) return alert("数据为空");
-
-            const header = lines[0].split(',').map(name =>
-                name.replace(/^\uFEFF/, '').trim()
-            );
-            const rows = lines.slice(1);
-
-            // 兼容新格式：
-            // 时间,总温度（主温度）,核心1,核心2...
-            // 同时兼容旧格式中的“核心1温度”等列名
-            const temperatureCols = [];
-            header.forEach((name, idx) => {
-                if (idx === 0) return;
-                const isMainTemperature =
-                    name.includes('总温度') || name.includes('主温度');
-                const isCoreTemperature = /^核心\s*\d+(?:温度)?$/.test(name);
-                if (isMainTemperature || isCoreTemperature) {
-                    temperatureCols.push({
-                        index: idx,
-                        label: isMainTemperature
+        function parseTemperatureColumns(header) {
+            const columns = [];
+            header.forEach((rawName, index) => {
+                if (index === 0) return;
+                const name = String(rawName).replace(/^\uFEFF/, '').trim();
+                const isMain = name.includes('总温度') || name.includes('主温度');
+                const isCore = /^核心\s*\d+(?:温度)?$/.test(name);
+                if (isMain || isCore) {
+                    columns.push({
+                        index,
+                        label: isMain
                             ? '总温度（主温度）'
                             : name.replace(/温度$/, '').replace(/\s+/g, '')
                     });
                 }
             });
-            console.log("自动识别温度列：", temperatureCols);
+            return columns;
+        }
 
-            // 组装图表数据
-            const datasets = [];
-            const timeLabels = [];
-            const temperatureDataMap = {};
-            temperatureCols.forEach(item => temperatureDataMap[item.label] = []);
-
-            for(const line of rows){
-                const cols = line.split(',');
-                const timeStr = cols[0];
-                timeLabels.push(timeStr);
-
-                for(const item of temperatureCols){
-                    const val = parseFloat(cols[item.index]);
-                    temperatureDataMap[item.label].push(isNaN(val) ? null : val);
-                }
-            }
-
-            // 构建Chart数据集
-            temperatureCols.forEach((item, idx)=>{
-                const color = colorList[idx % colorList.length];
-                datasets.push({
-                    label: item.label,
-                    data: temperatureDataMap[item.label],
+        function createDatasets(rows) {
+            return temperatureCols.map((column, datasetIndex) => {
+                const color = colorList[datasetIndex % colorList.length];
+                return {
+                    label: column.label,
+                    data: rows.map(row => {
+                        const rawValue = row.values[column.index];
+                        const value = rawValue === '' ? NaN : Number(rawValue);
+                        return {
+                            x: row.index,
+                            y: Number.isFinite(value) ? value : null
+                        };
+                    }),
                     borderColor: color,
                     backgroundColor: color + '33',
                     borderWidth: 2,
                     pointRadius: 1.5,
                     tension: 0.2,
                     fill: false
-                })
-            })
+                };
+            });
+        }
 
-            renderChart(timeLabels, datasets);
+        function rememberTimes(rows) {
+            timeByIndex.clear();
+            rows.forEach(row => timeByIndex.set(row.index, row.values[0]));
+        }
+
+        async function requestRange(start, limit) {
+            const response = await fetch(
+                `/data/range?start=${start}&limit=${limit}`,
+                {cache: 'no-store'}
+            );
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            return response.json();
+        }
+
+        async function loadData() {
+            const refreshButton = document.getElementById('refreshData');
+            refreshButton.disabled = true;
+            refreshButton.textContent = '刷新中…';
+            try {
+                const metaResponse = await fetch('/data/meta', {cache: 'no-store'});
+                if (!metaResponse.ok) throw new Error(`HTTP ${metaResponse.status}`);
+                const meta = await metaResponse.json();
+                totalRecords = Math.max(0, Number(meta.total) || 0);
+                temperatureCols = parseTemperatureColumns(
+                    Array.isArray(meta.header) ? meta.header : []
+                );
+                if (!temperatureCols.length) {
+                    throw new Error('CSV 中没有可识别的温度列');
+                }
+
+                const viewportWidth =
+                    document.getElementById('chartViewport').clientWidth ||
+                    window.innerWidth;
+                const visibleCount = Math.max(12, Math.floor(viewportWidth / 22));
+                const fetchCount = Math.min(
+                    5000,
+                    Math.max(visibleCount * 3, 200)
+                );
+                const start = Math.max(0, totalRecords - fetchCount);
+                const range = await requestRange(start, fetchCount);
+                totalRecords = Math.max(totalRecords, Number(range.total) || 0);
+                loadedStart = start;
+                loadedEnd = start + range.rows.length;
+                rememberTimes(range.rows);
+                const datasets = createDatasets(range.rows);
+                renderChart(datasets, visibleCount);
+            } catch (err) {
+                console.error('加载温度数据失败', err);
+                alert('无法获取温度数据，请检查服务端');
+            } finally {
+                refreshButton.disabled = false;
+                refreshButton.textContent = '刷新';
+            }
+        }
+
+        function scheduleVisibleRangeLoad() {
+            clearTimeout(rangeLoadTimer);
+            rangeLoadTimer = setTimeout(loadVisibleRange, 120);
+        }
+
+        async function loadVisibleRange() {
+            if (!chartInstance?.scales.x || totalRecords <= 0) return;
+            const visibleMin = Math.max(0, Math.floor(chartInstance.scales.x.min));
+            const visibleMax = Math.min(
+                totalRecords - 1,
+                Math.ceil(chartInstance.scales.x.max)
+            );
+            const visibleCount = Math.max(1, visibleMax - visibleMin + 1);
+            const margin = Math.max(50, visibleCount);
+            const wantedStart = Math.max(0, visibleMin - margin);
+            const wantedEnd = Math.min(totalRecords, visibleMax + margin + 1);
+            const safeStart = loadedStart + Math.floor(margin / 3);
+            const safeEnd = loadedEnd - Math.floor(margin / 3);
+            if (visibleMin >= safeStart && visibleMax < safeEnd) return;
+
+            const requestId = ++rangeRequestId;
+            try {
+                const range = await requestRange(
+                    wantedStart,
+                    Math.min(5000, wantedEnd - wantedStart)
+                );
+                if (requestId !== rangeRequestId || !chartInstance) return;
+
+                const xMin = chartInstance.scales.x.min;
+                const xMax = chartInstance.scales.x.max;
+                const yMin = chartInstance.scales.y.min;
+                const yMax = chartInstance.scales.y.max;
+                loadedStart = wantedStart;
+                loadedEnd = wantedStart + range.rows.length;
+                totalRecords = Math.max(totalRecords, Number(range.total) || 0);
+                rememberTimes(range.rows);
+                const replacement = createDatasets(range.rows);
+                chartInstance.data.datasets.forEach((dataset, index) => {
+                    dataset.data = replacement[index]?.data || [];
+                });
+                chartInstance.options.plugins.zoom.limits.x.max =
+                    Math.max(totalRecords - 1, 0);
+                chartInstance.options.scales.x.min = xMin;
+                chartInstance.options.scales.x.max = xMax;
+                chartInstance.options.scales.y.min = yMin;
+                chartInstance.options.scales.y.max = yMax;
+                chartInstance.update('none');
+                requestAnimationFrame(syncScrollbarsFromChart);
+            } catch (error) {
+                console.error('按范围加载温度数据失败', error);
+            }
+        }
+
+        function appendRealtimeRecord(message) {
+            if (!chartInstance || !Array.isArray(message.values)) return;
+            const index = Number(message.index);
+            if (!Number.isInteger(index) || index < 0) return;
+
+            const xMin = chartInstance.scales.x.min;
+            const xMax = chartInstance.scales.x.max;
+            const yMin = chartInstance.scales.y.min;
+            const yMax = chartInstance.scales.y.max;
+            totalRecords = Math.max(totalRecords, Number(message.total) || index + 1);
+            chartInstance.options.plugins.zoom.limits.x.max =
+                Math.max(totalRecords - 1, 0);
+
+            // 只把邻近当前缓存的实时点加入内存；看其他位置时仍保持按需加载。
+            if (index >= loadedStart && index <= loadedEnd) {
+                timeByIndex.set(index, message.values[0]);
+                temperatureCols.forEach((column, datasetIndex) => {
+                    const rawValue = message.values[column.index];
+                    const value = rawValue === '' ? NaN : Number(rawValue);
+                    const dataset = chartInstance.data.datasets[datasetIndex];
+                    if (!dataset) return;
+                    const point = {
+                        x: index,
+                        y: Number.isFinite(value) ? value : null
+                    };
+                    const existingIndex =
+                        dataset.data.findIndex(item => item.x === index);
+                    if (existingIndex >= 0) {
+                        dataset.data[existingIndex] = point;
+                    } else {
+                        dataset.data.push(point);
+                    }
+                });
+                loadedEnd = Math.max(loadedEnd, index + 1);
+            }
+
+            // 新记录不得改变用户当前的缩放和位置。
+            chartInstance.options.scales.x.min = xMin;
+            chartInstance.options.scales.x.max = xMax;
+            chartInstance.options.scales.y.min = yMin;
+            chartInstance.options.scales.y.max = yMax;
+            chartInstance.update('none');
+            requestAnimationFrame(syncScrollbarsFromChart);
+        }
+
+        function connectWebSocket() {
+            clearTimeout(webSocketReconnectTimer);
+            if (webSocket) webSocket.close();
+            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            webSocket = new WebSocket(`${protocol}//${location.host}/ws`);
+            webSocket.addEventListener('message', event => {
+                try {
+                    const message = JSON.parse(event.data);
+                    if (message.type === 'record') appendRealtimeRecord(message);
+                    if (message.type === 'ready') {
+                        totalRecords = Math.max(
+                            totalRecords,
+                            Number(message.total) || 0
+                        );
+                        if (chartInstance) {
+                            chartInstance.options.plugins.zoom.limits.x.max =
+                                Math.max(totalRecords - 1, 0);
+                            requestAnimationFrame(syncScrollbarsFromChart);
+                        }
+                    }
+                } catch (error) {
+                    console.error('处理实时温度消息失败', error);
+                }
+            });
+            webSocket.addEventListener('close', () => {
+                webSocketReconnectTimer = setTimeout(connectWebSocket, 3000);
+            });
+            webSocket.addEventListener('error', () => webSocket.close());
         }
 
         let chartInstance = null;
@@ -323,6 +515,7 @@
         let initialTouchGap = null;
         let chartPreferences = null;
         let syncingScrollbars = false;
+        let hoveredDatasetIndex = -1;
         const preferenceStorageKey = 'cpuTempChartPreferences';
         const isMobileDevice =
             window.matchMedia('(hover: none) and (pointer: coarse)').matches;
@@ -477,6 +670,7 @@
             chartInstance.options.scales.x.min = min;
             chartInstance.options.scales.x.max = min + visibleSpan;
             chartInstance.update('none');
+            scheduleVisibleRangeLoad();
         }
 
         function updateChartFromVerticalScroll() {
@@ -600,7 +794,7 @@
             datasets.forEach((dataset, index) => {
                 if (onlyVisible && !chartInstance.isDatasetVisible(index)) return;
                 dataset.data.forEach(value => {
-                    const number = Number(value);
+                    const number = Number(value?.y ?? value);
                     if (!Number.isFinite(number)) return;
                     min = Math.min(min, number);
                     max = Math.max(max, number);
@@ -675,30 +869,65 @@
             updateCoreFilterSummary();
         }
 
-        function renderChart(labels, datasets){
+        function renderExternalTooltip(context) {
+            const {chart, tooltip} = context;
+            let element = chart.canvas.parentNode.querySelector('.chart-tooltip');
+            if (!element) {
+                element = document.createElement('div');
+                element.className = 'chart-tooltip';
+                chart.canvas.parentNode.appendChild(element);
+            }
+            if (tooltip.opacity === 0) {
+                element.style.opacity = 0;
+                return;
+            }
+
+            element.replaceChildren();
+            const title = document.createElement('div');
+            title.className = 'chart-tooltip-title';
+            const pointIndex = Math.round(tooltip.dataPoints[0]?.parsed.x ?? 0);
+            title.textContent = formatTimeLabel(
+                timeByIndex.get(pointIndex) || '',
+                document.getElementById('showDate').checked
+            );
+            element.appendChild(title);
+
+            tooltip.dataPoints.forEach(item => {
+                const row = document.createElement('div');
+                row.className = 'chart-tooltip-row';
+                if (item.datasetIndex === hoveredDatasetIndex) {
+                    row.classList.add('is-active');
+                }
+                const icon = document.createElement('span');
+                icon.className = 'chart-tooltip-icon';
+                icon.style.backgroundColor = item.dataset.borderColor;
+                icon.style.color = item.dataset.borderColor;
+                const text = document.createElement('span');
+                text.textContent = `${item.dataset.label}: ${item.formattedValue} ℃`;
+                row.append(icon, text);
+                element.appendChild(row);
+            });
+
+            element.style.opacity = 1;
+            element.style.left = `${chart.canvas.offsetLeft + tooltip.caretX}px`;
+            element.style.top = `${chart.canvas.offsetTop + tooltip.caretY}px`;
+        }
+
+        function renderChart(datasets, visiblePointCount){
             const ctx = document.getElementById('tempChart').getContext('2d');
             if(chartInstance) chartInstance.destroy();
             const temperatureRange = getTemperatureRange(datasets);
             const zoomEnabled =
                 document.getElementById('zoomDirection').value !== 'none';
-            const pointCount = labels.length;
-            const viewportWidth =
-                document.getElementById('chartViewport').clientWidth ||
-                window.innerWidth;
-            const visiblePointCount = Math.max(
-                12,
-                Math.floor(viewportWidth / 22)
-            );
-            const initialXMax = Math.max(pointCount - 1, 0);
+            const initialXMax = Math.max(totalRecords - 1, 0);
             const initialXMin = Math.max(
                 0,
-                pointCount - visiblePointCount
+                totalRecords - visiblePointCount
             );
 
             chartInstance = new Chart(ctx, {
                 type: 'line',
                 data: {
-                    labels: labels,
                     datasets: datasets
                 },
                 options: {
@@ -713,6 +942,7 @@
                             grid: {color:"#333"}
                         },
                         x: {
+                            type: 'linear',
                             title: {display:true, text:"时间", color:"#eee"},
                             min: initialXMin,
                             max: initialXMax,
@@ -721,9 +951,9 @@
                                 maxRotation: 45,
                                 minRotation:45,
                                 callback: function(value) {
-                                    const rawLabel = this.getLabelForValue(value);
+                                    const rawLabel = timeByIndex.get(Math.round(value));
                                     return formatTimeLabel(
-                                        rawLabel,
+                                        rawLabel || '',
                                         document.getElementById('showDate').checked
                                     );
                                 }
@@ -736,21 +966,20 @@
                             display: false
                         },
                         tooltip: {
+                            enabled: false,
+                            external: renderExternalTooltip,
                             mode: 'index',
-                            intersect: false,
-                            callbacks: {
-                                title: function(items) {
-                                    if (!items.length) return '';
-                                    return formatTimeLabel(
-                                        items[0].label,
-                                        document.getElementById('showDate').checked
-                                    );
-                                }
-                            }
+                            intersect: false
                         },
                         zoom: {
-                            onZoom: syncScrollbarsFromChart,
-                            onZoomComplete: syncScrollbarsFromChart,
+                            onZoom: () => {
+                                syncScrollbarsFromChart();
+                                scheduleVisibleRangeLoad();
+                            },
+                            onZoomComplete: () => {
+                                syncScrollbarsFromChart();
+                                scheduleVisibleRangeLoad();
+                            },
                             zoom: {
                                 wheel: {
                                     enabled: zoomEnabled,
@@ -779,6 +1008,15 @@
                         mode: 'nearest',
                         axis: 'x',
                         intersect: false
+                    },
+                    onHover: (event) => {
+                        const nearest = chartInstance.getElementsAtEventForMode(
+                            event,
+                            'nearest',
+                            {intersect: false, axis: 'xy'},
+                            false
+                        );
+                        hoveredDatasetIndex = nearest[0]?.datasetIndex ?? -1;
                     }
                 }
             });
@@ -843,8 +1081,11 @@
         setupTouchDirectionDetection();
         setupChartScrollbars();
 
-        // 启动加载
-        window.onload = loadData;
+        // 启动历史范围加载和实时连接。
+        window.onload = () => {
+            loadData();
+            connectWebSocket();
+        };
     </script>
 </body>
 </html>
